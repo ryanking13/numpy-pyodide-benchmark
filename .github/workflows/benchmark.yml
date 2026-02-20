@@ -1,0 +1,47 @@
+name: NumPy Pyodide Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "25.2"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Compare native module sizes
+        run: node compare-size.mjs
+
+      - name: Run benchmark
+        run: node benchmark.mjs
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            results.json
+            results.md
+            size-results.md
+
+      - name: Post results to PR comment
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: results.md

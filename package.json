@@ -1,0 +1,10 @@
+{
+  "type": "module",
+  "scripts": {
+    "benchmark": "node benchmark.mjs",
+    "compare-size": "node compare-size.mjs"
+  },
+  "dependencies": {
+    "pyodide": "^0.29.3"
+  }
+}
