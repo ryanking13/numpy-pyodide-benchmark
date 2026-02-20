@@ -17,7 +17,7 @@ Each variant is a NumPy 2.2.5 wheel compiled for Pyodide with a different optimi
 
 | Script | Command | Description |
 |--------|---------|-------------|
-| `benchmark.mjs` | `npm run benchmark` | Runs 17 NumPy benchmarks per variant and compares performance |
+| `benchmark.mjs` | `npm run benchmark` | Runs 14 NumPy benchmarks per variant and compares performance |
 | `compare-size.mjs` | `npm run compare-size` | Compares compressed and uncompressed sizes of native `.so` modules in each wheel |
 
 ## Running
@@ -30,9 +30,14 @@ npm run benchmark
 
 ## Benchmarks
 
-17 benchmarks from the [Pyodide benchmark suite](https://github.com/pyodide/pyodide/tree/main/benchmark/benchmarks/numpy_benchmarks) (originally from [serge-sans-paille/numpy-benchmarks](https://github.com/serge-sans-paille/numpy-benchmarks)):
+14 benchmarks from the [Pyodide benchmark suite](https://github.com/pyodide/pyodide/tree/main/benchmark/benchmarks/numpy_benchmarks) (originally from [serge-sans-paille/numpy-benchmarks](https://github.com/serge-sans-paille/numpy-benchmarks)):
 
-`allpairs_distances`, `arc_distance`, `check_mask`, `create_grid`, `cronbach`, `diffusion`, `evolve`, `grayscott`, `harris`, `l2norm`, `log_likelihood`, `lstsqr`, `mandel`, `multiple_sum`, `periodic_dist`, `reverse_cumsum`, `rosen`
+`allpairs_distances`, `arc_distance`, `check_mask`, `create_grid`, `cronbach`, `diffusion`, `grayscott`, `l2norm`, `log_likelihood`, `mandel`, `multiple_sum`, `periodic_dist`, `reverse_cumsum`, `rosen`
+
+3 benchmarks were removed after variance analysis (run 3× and measured cross-run coefficient of variation):
+- `evolve` — `np.roll` creates 4 full 512×512 copies per call, GC-sensitive (ratio CoV > 6%)
+- `harris` — creates many temporary 512×512 sliced arrays, GC-sensitive (ratio CoV > 6%)
+- `lstsqr` — baseline raw time unstable at 500K elements (CoV > 5%)
 
 Each benchmark runs with 5 warmup iterations (discarded), then 10 timed repeats of 10 executions each. The min and max repeats are dropped and the remaining are averaged.
 

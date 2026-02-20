@@ -122,25 +122,8 @@ def diffusion(u, tempU, iterNum):
         tempU[:, :] = 0.0
 `,
   },
-  {
-    name: "evolve",
-    setup:
-      "import numpy as np ; grid_shape = (512, 512) ; grid = np.zeros(grid_shape) ; block_low = int(grid_shape[0] * .4) ; block_high = int(grid_shape[0] * .5) ; grid[block_low:block_high, block_low:block_high] = 0.005",
-    run: "evolve(grid, 0.1)",
-    code: `
-import numpy as np
-
-def laplacian(grid):
-    return (
-        np.roll(grid, +1, 0) + np.roll(grid, -1, 0)
-        + np.roll(grid, +1, 1) + np.roll(grid, -1, 1)
-        - 4 * grid
-    )
-
-def evolve(grid, dt, D=1):
-    return grid + dt * D * laplacian(grid)
-`,
-  },
+  // evolve: REMOVED — np.roll creates 4 full 512x512 copies per call,
+  // making it memory-allocation-heavy and GC-sensitive (CoV > 6% across runs)
   {
     name: "grayscott",
     setup: "pass",
@@ -168,25 +151,8 @@ def grayscott(counts, Du, Dv, F, k):
     return V
 `,
   },
-  {
-    name: "harris",
-    setup:
-      "import numpy as np ; M, N = 512, 512 ; X = np.random.randn(M,N)",
-    run: "harris(X)",
-    code: `
-def harris(X):
-    m, n = X.shape
-    dx = (X[1:, :] - X[:m-1, :])[:, 1:]
-    dy = (X[:, 1:] - X[:, :n-1])[1:, :]
-    A = dx * dx
-    B = dy * dy
-    C = dx * dy
-    tr = A + B
-    det = A * B - C * C
-    k = 0.05
-    return det - k * tr * tr
-`,
-  },
+  // harris: REMOVED — creates many temporary 512x512 sliced arrays,
+  // making it GC-sensitive with ratio CoV up to 6.5% across runs
   {
     name: "l2norm",
     setup: "import numpy as np ; N = 1000; x = np.random.rand(N,N)",
@@ -213,25 +179,8 @@ def log_likelihood(data, mean, sigma):
     return numpy.log(pdfs).sum()
 `,
   },
-  {
-    name: "lstsqr",
-    setup:
-      "import numpy as np ; N = 500000 ; X, Y = np.random.rand(N), np.random.rand(N)",
-    run: "lstsqr(X, Y)",
-    code: `
-import numpy as np
-
-def lstsqr(x, y):
-    x_avg = np.average(x)
-    y_avg = np.average(y)
-    dx = x - x_avg
-    var_x = np.sum(dx**2)
-    cov_xy = np.sum(dx * (y - y_avg))
-    slope = cov_xy / var_x
-    y_interc = y_avg - slope * x_avg
-    return (slope, y_interc)
-`,
-  },
+  // lstsqr: REMOVED — baseline (o2) raw time has 5.1% CoV across runs
+  // (500K-element array allocation sensitive to GC/system state)
   {
     name: "mandel",
     setup:
@@ -377,40 +326,59 @@ function formatTime(seconds) {
 }
 
 // ---------------------------------------------------------------------------
-// Run benchmarks for one variant
+// Shuffle helper (Fisher-Yates)
 // ---------------------------------------------------------------------------
-async function runVariant(variantName) {
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ---------------------------------------------------------------------------
+// Run a single benchmark for a single variant (fresh Pyodide instance)
+// ---------------------------------------------------------------------------
+async function runOneBenchmark(variantName, bench) {
   const variantDir = path.join(WHEEL_DIR, variantName);
   const wheelPath = findWheel(variantDir);
   const wheelUrl = `file://${wheelPath}`;
 
-  console.log(`\n${"=".repeat(60)}`);
-  console.log(`  Loading variant: ${variantName}`);
-  console.log(`  Wheel: ${path.basename(wheelPath)} (${(fs.statSync(wheelPath).size / 1024).toFixed(0)} KB)`);
-  console.log(`${"=".repeat(60)}`);
-
   const pyodide = await loadPyodide();
-  await pyodide.loadPackage(`${wheelUrl}`);
-  await pyodide.runPythonAsync(`
-import numpy as np
-print(f"numpy {np.__version__} loaded")
-`);
+  await pyodide.loadPackage(`${wheelUrl}`, { messageCallback: () => {} });
+  await pyodide.runPythonAsync(`import numpy as np`);
 
-  const results = {};
+  const script = buildBenchmarkScript(bench);
+  const elapsed = await pyodide.runPythonAsync(script);
+  return elapsed;
+}
 
-  for (const bench of BENCHMARKS) {
-    const script = buildBenchmarkScript(bench);
-    try {
-      const elapsed = await pyodide.runPythonAsync(script);
-      results[bench.name] = elapsed;
-      console.log(`  ✓ ${bench.name.padEnd(24)} ${formatTime(elapsed)}`);
-    } catch (err) {
-      console.log(`  ✗ ${bench.name.padEnd(24)} ERROR: ${err.message.split("\n").pop()}`);
-      results[bench.name] = null;
-    }
+// ---------------------------------------------------------------------------
+// Sort benchmarks by impact (largest avg deviation from baseline first)
+// ---------------------------------------------------------------------------
+function sortByImpact(allResults) {
+  const baseline = allResults[BASELINE];
+  if (!baseline) return [...BENCHMARKS];
+
+  const nonBaselineVariants = VARIANTS.filter((v) => v !== BASELINE);
+
+  return [...BENCHMARKS].sort((a, b) => {
+    const avgA = avgRatio(a.name, nonBaselineVariants, allResults, baseline);
+    const avgB = avgRatio(b.name, nonBaselineVariants, allResults, baseline);
+    // Sort by distance from 1.0 (descending — biggest impact first)
+    return Math.abs(avgB - 1) - Math.abs(avgA - 1);
+  });
+}
+
+function avgRatio(benchName, variants, allResults, baseline) {
+  const ratios = [];
+  for (const v of variants) {
+    const val = allResults[v]?.[benchName];
+    const baseVal = baseline[benchName];
+    if (val != null && baseVal != null) ratios.push(val / baseVal);
   }
-
-  return results;
+  return ratios.length ? ratios.reduce((a, b) => a + b, 0) / ratios.length : 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -423,8 +391,10 @@ function printComparisonTable(allResults) {
     return;
   }
 
+  const sorted = sortByImpact(allResults);
+
   console.log(`\n${"=".repeat(80)}`);
-  console.log("  COMPARISON TABLE  (baseline: " + BASELINE + ")");
+  console.log("  COMPARISON TABLE  (baseline: " + BASELINE + ", sorted by impact)");
   console.log(`${"=".repeat(80)}`);
 
   // Header
@@ -436,7 +406,7 @@ function printComparisonTable(allResults) {
   console.log(header);
   console.log("-".repeat(header.length));
 
-  for (const bench of BENCHMARKS) {
+  for (const bench of sorted) {
     let row = bench.name.padEnd(nameCol);
     for (const v of VARIANTS) {
       const val = allResults[v]?.[bench.name];
@@ -508,8 +478,9 @@ function generateMarkdownSummary(allResults) {
   }
   md += "\n";
 
-  // Rows
-  for (const bench of BENCHMARKS) {
+  // Rows (sorted by impact — largest deviation from baseline first)
+  const sorted = sortByImpact(allResults);
+  for (const bench of sorted) {
     md += `| ${bench.name} |`;
     for (const v of VARIANTS) {
       const val = allResults[v]?.[bench.name];
@@ -571,11 +542,26 @@ async function main() {
   console.log(`Baseline: ${BASELINE}`);
   console.log(`Benchmarks: ${BENCHMARKS.length}`);
   console.log(`Warmup: ${WARMUP}, Repeat: ${REPEAT}, Number: ${NUMBER}`);
+  console.log(`Variant order: randomized per benchmark`);
 
-  const allResults = {};
+  const allResults = Object.fromEntries(VARIANTS.map((v) => [v, {}]));
 
-  for (const variant of VARIANTS) {
-    allResults[variant] = await runVariant(variant);
+  for (const bench of BENCHMARKS) {
+    // Randomize variant order for each benchmark to avoid systematic
+    // bias from memory pressure / GC state accumulating across runs
+    const order = shuffle(VARIANTS);
+    console.log(`\n--- ${bench.name} (order: ${order.join(" → ")}) ---`);
+
+    for (const variant of order) {
+      try {
+        const elapsed = await runOneBenchmark(variant, bench);
+        allResults[variant][bench.name] = elapsed;
+        console.log(`  ✓ ${variant.padEnd(4)} ${formatTime(elapsed)}`);
+      } catch (err) {
+        console.log(`  ✗ ${variant.padEnd(4)} ERROR: ${err.message.split("\n").pop()}`);
+        allResults[variant][bench.name] = null;
+      }
+    }
   }
 
   // Print comparison
